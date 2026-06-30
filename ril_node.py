@@ -15,7 +15,7 @@ from supabase import create_client, Client
 # 1. HARD-CODED BACKEND CONFIGURATION
 # ==========================================
 SUPABASE_URL = "https://ravxgcibqwxnuupcxidt.supabase.co"
-SUPABASE_KEY = "your-service-role-key"  # <-- Swap this with your actual secure service key
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJhdnhnY2licXd4bnV1cGN4aWR0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MjE5NzYwOCwiZXhwIjoyMDk3NzczNjA4fQ.1CmMwQ34vHN3vKwhylJTpLlaBP9RUctPNESSp_CnCEY"
 
 FASTAPI_URL = "https://edgevision-gis.onrender.com/api/telemetry/"
 API_KEY = "pidec_edge_8f43b2a9e1d7c6f54032b1a8c9d0e7f6"  # <-- Swap with your active .env secret
