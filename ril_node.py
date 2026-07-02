@@ -14,13 +14,13 @@ from supabase import create_client, Client
 # 1. HARD-CODED BACKEND CONFIGURATION
 # =====================================================================
 SUPABASE_URL = "https://ravxgcibqwxnuupcxidt.supabase.co"
-# SERVICE_ROLE KEY HERE:
+# SECURE SERVICE_ROLE KEY HERE:
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJhdnhnY2licXd4bnV1cGN4aWR0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MjE5NzYwOCwiZXhwIjoyMDk3NzczNjA4fQ.1CmMwQ34vHN3vKwhylJTpLlaBP9RUctPNESSp_CnCEY"  
 
 FASTAPI_URL = "https://edgevision-gis.onrender.com/api/telemetry/"
 API_KEY = "pidec_edge_8f43b2a9e1d7c6f54032b1a8c9d0e7f6"  
 
-# Dynamically force absolute path resolution to eliminate "Can't read ONNX file" errors
+# Dynamically force absolute path resolution to eliminate file path errors
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "best.onnx")
 
@@ -104,10 +104,8 @@ def network_uploader_worker():
                 
                 if response.status_code == 201:
                     print(f"🎉 Successfully ingested item {db_id} to WebGIS Backend!")
-                    # Success: Clear cache queue record
                     cursor.execute("DELETE FROM telemetry_queue WHERE id = ?", (db_id,))
                     conn.commit()
-                    # Delete the file off the Pi's storage to save space
                     if os.path.exists(img_path):
                         os.remove(img_path)
                 else:
@@ -122,7 +120,6 @@ def network_uploader_worker():
             
         conn.close()
 
-# Fire up network thread as a background worker daemon
 uploader_thread = threading.Thread(target=network_uploader_worker, daemon=True)
 uploader_thread.start()
 
@@ -161,24 +158,23 @@ try:
         # Execute model forward propagation passes
         outputs = net.forward()
         
-        # Shape Correction: Clean batch dimension out if present
-        if len(outputs.shape) == 3:
-            outputs = outputs[0]
+        # FIX: Collapse ALL wrapper/singleton dimensions down to a reliable 2D grid
+        outputs = np.squeeze(outputs)
             
-        # Shape Correction: Dynamic orientation verification to avoid IndexErrors
-        if outputs.shape[0] == 156 or outputs.shape[0] < outputs.shape[1]:
-            predictions = outputs.T   # Rotate layout to guarantee an aligned shape (8400, 156)
+        # Shape Correction: Dynamic orientation validation to align arrays to (8400, attributes)
+        if outputs.shape[0] < outputs.shape[1]:
+            predictions = outputs.T   
         else:
-            predictions = outputs     # Already sitting in optimal (8400, 156) alignment
+            predictions = outputs     
         
-        num_anchors = predictions.shape[0]  # Exactly 8400 anchors
+        num_anchors = predictions.shape[0]  
         
         boxes = []
         confidences = []
         
-        # Parse the predictions matrix using explicit row slicing to avoid array boundary leakage
+        # Parse the predictions matrix safely row by row
         for i in range(num_anchors):
-            row = predictions[i]   # Isolate a single row of length 156 attributes
+            row = predictions[i]   # Isolate a clean 1D row array
             scores = row[4:]       # Isolate just the class probabilities
             class_id = np.argmax(scores)
             confidence = scores[class_id]
@@ -227,7 +223,7 @@ try:
             conn.close()
             
             print(f"💾 Pothole Logged Locally! Area: {total_pixel_area} px. Enqueued for hotspot upload.")
-            time.sleep(2.0)  # Standard window delay to prevent logging duplicates of the same road pothole
+            time.sleep(2.0)  
 
 except KeyboardInterrupt:
     print("\nShutting down RIL Logger System cleanly...")
