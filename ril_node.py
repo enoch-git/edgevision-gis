@@ -14,16 +14,19 @@ from supabase import create_client, Client
 # 1. HARD-CODED BACKEND CONFIGURATION
 # =====================================================================
 SUPABASE_URL = "https://ravxgcibqwxnuupcxidt.supabase.co"
-# ⚠️ MAKE SURE TO PASTE YOUR ACTUAL SECURE SERVICE_ROLE KEY HERE:
+# SERVICE_ROLE KEY HERE:
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJhdnhnY2licXd4bnV1cGN4aWR0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MjE5NzYwOCwiZXhwIjoyMDk3NzczNjA4fQ.1CmMwQ34vHN3vKwhylJTpLlaBP9RUctPNESSp_CnCEY"  
 
 FASTAPI_URL = "https://edgevision-gis.onrender.com/api/telemetry/"
 API_KEY = "pidec_edge_8f43b2a9e1d7c6f54032b1a8c9d0e7f6"  
 
-MODEL_PATH = "best.onnx"
+# Dynamically force absolute path resolution to eliminate "Can't read ONNX file" errors
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "best.onnx")
+
 CONF_THRESHOLD = 0.40
 NMS_THRESHOLD = 0.45
-IMAGE_DIR = "./captured_potholes"
+IMAGE_DIR = os.path.join(BASE_DIR, "captured_potholes")
 
 # Initialize directories and cloud clients
 os.makedirs(IMAGE_DIR, exist_ok=True)
@@ -33,7 +36,8 @@ supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # 2. LOCAL SQLITE CACHE INITIALIZATION
 # =====================================================================
 def init_local_cache():
-    conn = sqlite3.connect("ril_cache.db")
+    db_path = os.path.join(BASE_DIR, "ril_cache.db")
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS telemetry_queue (
@@ -59,8 +63,10 @@ def get_gps_coordinates():
 # =====================================================================
 def network_uploader_worker():
     print("📡 Background Network Worker Loop Activated...")
+    db_path = os.path.join(BASE_DIR, "ril_cache.db")
+    
     while True:
-        conn = sqlite3.connect("ril_cache.db")
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
         # Read the oldest stored tracking event
@@ -101,7 +107,7 @@ def network_uploader_worker():
                     # Success: Clear cache queue record
                     cursor.execute("DELETE FROM telemetry_queue WHERE id = ?", (db_id,))
                     conn.commit()
-                    # Delete the file off the Pi's storage to save hardware space
+                    # Delete the file off the Pi's storage to save space
                     if os.path.exists(img_path):
                         os.remove(img_path)
                 else:
@@ -141,12 +147,14 @@ print("🚀 RIL Edge Node Active and Monitoring Camera Feed...")
 # =====================================================================
 # 5. CORE CAMERA RUNTIME INFERENCE LOOP
 # =====================================================================
+db_path = os.path.join(BASE_DIR, "ril_cache.db")
+
 try:
     while True:
         frame = picam2.capture_array()
         h_orig, w_orig, _ = frame.shape
         
-        # Format raw camera array into a unified 640x640 C++ matrix block
+        # Format raw camera array into a unified 640x640 matrix block
         blob = cv2.dnn.blobFromImage(frame, 1/255.0, (640, 640), swapRB=False, crop=False)
         net.setInput(blob)
         
@@ -157,18 +165,21 @@ try:
         if len(outputs.shape) == 3:
             outputs = outputs[0]
             
-        # Shape Correction: Dynamic orientation validation to avoid IndexErrors
-        if outputs.shape[0] < outputs.shape[1]:
+        # Shape Correction: Dynamic orientation verification to avoid IndexErrors
+        if outputs.shape[0] == 156 or outputs.shape[0] < outputs.shape[1]:
             predictions = outputs.T   # Rotate layout to guarantee an aligned shape (8400, 156)
         else:
             predictions = outputs     # Already sitting in optimal (8400, 156) alignment
         
+        num_anchors = predictions.shape[0]  # Exactly 8400 anchors
+        
         boxes = []
         confidences = []
         
-        # Parse the predictions matrix
-        for row in predictions:
-            scores = row[4:]
+        # Parse the predictions matrix using explicit row slicing to avoid array boundary leakage
+        for i in range(num_anchors):
+            row = predictions[i]   # Isolate a single row of length 156 attributes
+            scores = row[4:]       # Isolate just the class probabilities
             class_id = np.argmax(scores)
             confidence = scores[class_id]
             
@@ -201,12 +212,12 @@ try:
             img_filename = f"pothole_{unique_id}.jpg"
             local_img_path = os.path.join(IMAGE_DIR, img_filename)
             
-            # Convert channel mapping back to BGR for OpenCV file-write compilation passes
+            # Convert channel mapping back to BGR for OpenCV file-write syntax
             bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             cv2.imwrite(local_img_path, bgr_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             
             # Atomically drop record details straight into local caching table queue
-            conn = sqlite3.connect("ril_cache.db")
+            conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT INTO telemetry_queue (timestamp, latitude, longitude, pixel_area, image_path) VALUES (?, ?, ?, ?, ?)",
