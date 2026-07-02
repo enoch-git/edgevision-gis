@@ -20,7 +20,7 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 FASTAPI_URL = "https://edgevision-gis.onrender.com/api/telemetry/"
 API_KEY = "pidec_edge_8f43b2a9e1d7c6f54032b1a8c9d0e7f6"  
 
-# Dynamically force absolute path resolution to eliminate file path errors
+# Force absolute path resolution to eliminate file path errors
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "best.onnx")
 
@@ -135,14 +135,15 @@ net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
 
 # Wake up the hardware camera node
 picam2 = Picamera2()
-config = picam2.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"})
+config = picam2.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"}
+)
 picam2.configure(config)
 picam2.start()
 
 print("🚀 RIL Edge Node Active and Monitoring Camera Feed...")
 
 # =====================================================================
-# 5. CORE CAMERA RUNTIME INFERENCE LOOP
+# 5. CORE CAMERA RUNTIME INFERENCE LOOP (VECTORIZED PERFORMANCE)
 # =====================================================================
 db_path = os.path.join(BASE_DIR, "ril_cache.db")
 
@@ -158,40 +159,49 @@ try:
         # Execute model forward propagation passes
         outputs = net.forward()
         
-        # FIX: Collapse ALL wrapper/singleton dimensions down to a reliable 2D grid
+        # Safely extract array out of list/tuple wrapper structures if present
+        if isinstance(outputs, (list, tuple)):
+            outputs = outputs[0]
+            
+        # Collapse all singleton dimensions down
         outputs = np.squeeze(outputs)
             
-        # Shape Correction: Dynamic orientation validation to align arrays to (8400, attributes)
-        if outputs.shape[0] < outputs.shape[1]:
-            predictions = outputs.T   
-        else:
-            predictions = outputs     
+        # Guarantee 2D layout alignment is exactly (8400, attributes)
+        if len(outputs.shape) == 3:
+            outputs = outputs[0]
+        if outputs.shape[1] == 8400 or outputs.shape[0] < outputs.shape[1]:
+            outputs = outputs.T   
         
-        num_anchors = predictions.shape[0]  
+        # Vectorized Parsing: Extract box vectors and class slices across all rows at once
+        boxes_proto = outputs[:, :4]
+        class_scores = outputs[:, 4:]
+        
+        # Direct axis evaluation prevents indexing boundary leaks
+        class_ids = np.argmax(class_scores, axis=1)
+        confidences = np.max(class_scores, axis=1)
+        
+        # Filter rows by confidence threshold instantly via boolean masks
+        mask = confidences > CONF_THRESHOLD
+        filtered_boxes = boxes_proto[mask]
+        filtered_confs = confidences[mask]
+        filtered_class_ids = class_ids[mask]
         
         boxes = []
-        confidences = []
+        final_confidences = []
         
-        # Parse the predictions matrix safely row by row
-        for i in range(num_anchors):
-            row = predictions[i]   # Isolate a clean 1D row array
-            scores = row[4:]       # Isolate just the class probabilities
-            class_id = np.argmax(scores)
-            confidence = scores[class_id]
+        # Map passing targets back to native resolution map structures
+        for box, conf in zip(filtered_boxes, filtered_confs):
+            cx, cy, w, h = box
+            x1 = int((cx - w / 2) * (w_orig / 640.0))
+            y1 = int((cy - h / 2) * (h_orig / 640.0))
+            width = int(w * (w_orig / 640.0))
+            height = int(h * (h_orig / 640.0))
             
-            if confidence > CONF_THRESHOLD:
-                cx, cy, w, h = row[0], row[1], row[2], row[3]
-                # Map scaled ratios cleanly back to the real capture resolution dimensions
-                x1 = int((cx - w / 2) * (w_orig / 640.0))
-                y1 = int((cy - h / 2) * (h_orig / 640.0))
-                width = int(w * (w_orig / 640.0))
-                height = int(h * (h_orig / 640.0))
-                
-                boxes.append([x1, y1, width, height])
-                confidences.append(float(confidence))
+            boxes.append([x1, y1, width, height])
+            final_confidences.append(float(conf))
                 
         # Filter overlapping prediction bounding boxes via Non-Maximum Suppression
-        indices = cv2.dnn.NMSBoxes(boxes, confidences, CONF_THRESHOLD, NMS_THRESHOLD)
+        indices = cv2.dnn.NMSBoxes(boxes, final_confidences, CONF_THRESHOLD, NMS_THRESHOLD)
         
         if len(indices) > 0:
             total_pixel_area = 0
